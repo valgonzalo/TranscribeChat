@@ -1,5 +1,5 @@
 /**
- * VoiceChat Studio — 1 Audio Session = 1 Note Card
+ * VoiceChat Studio — 1 Audio Session = 1 Note Card (Fixed Asynchronous Event Sync)
  * Fully robust across Mobile (Android/iOS) and Desktop (Chrome/Safari/Edge)
  */
 
@@ -7,6 +7,7 @@ class VoiceChatStudio {
   constructor() {
     this.recognition = null;
     this.isRecording = false;
+    this.isFinalizing = false;
     this.messages = [];
     
     // Recording Session Accumulator
@@ -107,12 +108,19 @@ class VoiceChatStudio {
 
     this.recognition.onstart = () => {
       this.isRecording = true;
+      this.isFinalizing = false;
       this.updateUIState(true);
       this.startAudioVisualizer();
       this.playBeep(880, 0.08); // High chime on start
     };
 
     this.recognition.onresult = (event) => {
+      // If user already stopped recording, discard late async events and ensure bubble stays hidden
+      if (!this.isRecording || this.isFinalizing) {
+        this.liveBubble.classList.add('hidden');
+        return;
+      }
+
       let interim = '';
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
@@ -132,10 +140,12 @@ class VoiceChatStudio {
       // Live real-time streaming preview
       const fullLiveText = [...this.sessionFinalChunks, this.currentInterim].filter(Boolean).join(' ');
 
-      if (fullLiveText.length > 0) {
+      if (fullLiveText.length > 0 && this.isRecording) {
         this.liveBubble.classList.remove('hidden');
         this.liveText.textContent = fullLiveText;
         this.scrollToBottom();
+      } else {
+        this.liveBubble.classList.add('hidden');
       }
     };
 
@@ -148,17 +158,19 @@ class VoiceChatStudio {
     };
 
     this.recognition.onend = () => {
-      // Auto-reconnect if recording is still active (handles mobile silence pauses smoothly)
-      if (this.isRecording) {
+      // Auto-reconnect ONLY if recording is genuinely active
+      if (this.isRecording && !this.isFinalizing) {
         clearTimeout(this.restartTimeout);
         this.restartTimeout = setTimeout(() => {
-          if (this.isRecording) {
+          if (this.isRecording && !this.isFinalizing) {
             try {
               this.recognition.start();
             } catch (e) {}
           }
         }, 100);
       } else {
+        this.liveBubble.classList.add('hidden');
+        this.liveText.textContent = '';
         this.updateUIState(false);
         this.stopAudioVisualizer();
       }
@@ -176,11 +188,12 @@ class VoiceChatStudio {
   }
 
   startRecording() {
-    // Reset session buffer for this new audio
+    // Reset session buffer completely for this new audio
     this.sessionFinalChunks = [];
     this.currentInterim = '';
     this.liveText.textContent = '';
     this.liveBubble.classList.add('hidden');
+    this.isFinalizing = false;
 
     try {
       this.recognition.lang = 'es-AR';
@@ -191,8 +204,15 @@ class VoiceChatStudio {
   }
 
   stopRecording() {
+    if (!this.isRecording && !this.isFinalizing) return;
+    
+    this.isFinalizing = true;
     this.isRecording = false;
     clearTimeout(this.restartTimeout);
+
+    // Immediately hide and clear live stream box
+    this.liveBubble.classList.add('hidden');
+    this.liveText.textContent = '';
 
     try {
       this.recognition.stop();
@@ -208,11 +228,10 @@ class VoiceChatStudio {
       this.addMessage(fullNoteText);
     }
 
-    // Reset buffer & hide live bubble
+    // Reset buffer & state
     this.sessionFinalChunks = [];
     this.currentInterim = '';
-    this.liveBubble.classList.add('hidden');
-    this.liveText.textContent = '';
+    this.isFinalizing = false;
 
     this.updateUIState(false);
     this.stopAudioVisualizer();
@@ -231,6 +250,7 @@ class VoiceChatStudio {
       this.stopIcon.classList.add('hidden');
       this.statusBadge.className = 'status-indicator-pill idle';
       this.statusLabel.textContent = 'EN ESPERA';
+      this.liveBubble.classList.add('hidden');
     }
   }
 
@@ -606,6 +626,8 @@ class VoiceChatStudio {
     if (confirm('¿Deseas limpiar todas las notas de voz?')) {
       this.messages = [];
       this.messagesList.innerHTML = '';
+      this.liveBubble.classList.add('hidden');
+      this.liveText.textContent = '';
       this.emptyState.classList.remove('hidden');
       localStorage.removeItem('voicechat_studio_records');
       this.showToast('Historial de notas limpio');
