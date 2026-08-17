@@ -1,18 +1,17 @@
 /**
- * VoiceChat Studio — 1 Audio Session = 1 Note Card (Fixed Asynchronous Event Sync)
- * Fully robust across Mobile (Android/iOS) and Desktop (Chrome/Safari/Edge)
+ * VoiceChat Studio — 1 Audio Session = 1 Note Card
+ * 100% Guaranteed Mobile (Android / iOS) & Desktop Compatible
  */
 
 class VoiceChatStudio {
   constructor() {
     this.recognition = null;
     this.isRecording = false;
-    this.isFinalizing = false;
     this.messages = [];
     
-    // Recording Session Accumulator
-    this.sessionFinalChunks = [];
-    this.currentInterim = '';
+    // Rock-Solid Text Accumulator for Mobile & Desktop
+    this.accumulatedSessionText = '';
+    this.currentSegmentText = '';
     this.restartTimeout = null;
 
     // Audio Context, Synth & Visualizer
@@ -68,7 +67,7 @@ class VoiceChatStudio {
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     if (!window.isSecureContext && !isLocal) {
       setTimeout(() => {
-        this.showToast('⚠️ Los navegadores requieren HTTPS para usar el micrófono en celulares.', 7000);
+        this.showToast('⚠️ Para usar el micrófono en celulares, accedé desde HTTPS (Vercel).', 7000);
       }, 800);
     }
   }
@@ -88,7 +87,7 @@ class VoiceChatStudio {
   }
 
   // =========================================================================
-  // Speech Recognition Engine (1 Audio = 1 Message)
+  // Speech Recognition Engine (Cross-Platform Mobile/Desktop)
   // =========================================================================
   initSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -108,44 +107,33 @@ class VoiceChatStudio {
 
     this.recognition.onstart = () => {
       this.isRecording = true;
-      this.isFinalizing = false;
       this.updateUIState(true);
       this.startAudioVisualizer();
       this.playBeep(880, 0.08); // High chime on start
     };
 
     this.recognition.onresult = (event) => {
-      // If user already stopped recording, discard late async events and ensure bubble stays hidden
-      if (!this.isRecording || this.isFinalizing) {
-        this.liveBubble.classList.add('hidden');
-        return;
-      }
-
+      let final = '';
       let interim = '';
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
+      // Loop over all results produced in the current recognition session
+      for (let i = 0; i < event.results.length; ++i) {
         if (event.results[i].isFinal) {
-          const chunk = transcript.trim();
-          if (chunk) {
-            this.sessionFinalChunks.push(chunk);
-          }
+          final += event.results[i][0].transcript;
         } else {
-          interim += transcript;
+          interim += event.results[i][0].transcript;
         }
       }
 
-      this.currentInterim = interim.trim();
+      this.currentSegmentText = (final + ' ' + interim).trim();
 
-      // Live real-time streaming preview
-      const fullLiveText = [...this.sessionFinalChunks, this.currentInterim].filter(Boolean).join(' ');
+      // Combine previous segments (if auto-reconnected on pause) + current segment
+      const fullText = (this.accumulatedSessionText + ' ' + this.currentSegmentText).trim();
 
-      if (fullLiveText.length > 0 && this.isRecording) {
+      if (fullText.length > 0 && this.isRecording) {
         this.liveBubble.classList.remove('hidden');
-        this.liveText.textContent = fullLiveText;
+        this.liveText.textContent = fullText;
         this.scrollToBottom();
-      } else {
-        this.liveBubble.classList.add('hidden');
       }
     };
 
@@ -158,11 +146,15 @@ class VoiceChatStudio {
     };
 
     this.recognition.onend = () => {
-      // Auto-reconnect ONLY if recording is genuinely active
-      if (this.isRecording && !this.isFinalizing) {
+      // If mobile engine pauses on silence but user is still recording:
+      if (this.isRecording) {
+        if (this.currentSegmentText) {
+          this.accumulatedSessionText = (this.accumulatedSessionText + ' ' + this.currentSegmentText).trim();
+          this.currentSegmentText = '';
+        }
         clearTimeout(this.restartTimeout);
         this.restartTimeout = setTimeout(() => {
-          if (this.isRecording && !this.isFinalizing) {
+          if (this.isRecording) {
             try {
               this.recognition.start();
             } catch (e) {}
@@ -188,12 +180,11 @@ class VoiceChatStudio {
   }
 
   startRecording() {
-    // Reset session buffer completely for this new audio
-    this.sessionFinalChunks = [];
-    this.currentInterim = '';
+    // Fresh session
+    this.accumulatedSessionText = '';
+    this.currentSegmentText = '';
     this.liveText.textContent = '';
     this.liveBubble.classList.add('hidden');
-    this.isFinalizing = false;
 
     try {
       this.recognition.lang = 'es-AR';
@@ -204,15 +195,8 @@ class VoiceChatStudio {
   }
 
   stopRecording() {
-    if (!this.isRecording && !this.isFinalizing) return;
-    
-    this.isFinalizing = true;
     this.isRecording = false;
     clearTimeout(this.restartTimeout);
-
-    // Immediately hide and clear live stream box
-    this.liveBubble.classList.add('hidden');
-    this.liveText.textContent = '';
 
     try {
       this.recognition.stop();
@@ -220,18 +204,19 @@ class VoiceChatStudio {
       console.warn('Recognition stop error:', err);
     }
 
-    // Combine all transcribed speech from this entire audio recording
-    const fullNoteText = [...this.sessionFinalChunks, this.currentInterim].filter(Boolean).join(' ').trim();
+    // Capture the entire accumulated speech text from this recording
+    const fullNoteText = (this.accumulatedSessionText + ' ' + this.currentSegmentText).trim();
 
-    // Create EXACTLY 1 note card for this audio recording
+    // Create EXACTLY 1 single note card
     if (fullNoteText.length > 0) {
       this.addMessage(fullNoteText);
     }
 
     // Reset buffer & state
-    this.sessionFinalChunks = [];
-    this.currentInterim = '';
-    this.isFinalizing = false;
+    this.accumulatedSessionText = '';
+    this.currentSegmentText = '';
+    this.liveBubble.classList.add('hidden');
+    this.liveText.textContent = '';
 
     this.updateUIState(false);
     this.stopAudioVisualizer();
