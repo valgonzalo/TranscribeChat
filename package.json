@@ -1,0 +1,23 @@
+{
+  "name": "voicechat-studio",
+  "version": "1.0.0",
+  "description": "Estudio minimalista de notas de voz en tiempo real con Web Speech API y exportación",
+  "private": true,
+  "scripts": {
+    "dev": "serve .",
+    "start": "serve ."
+  },
+  "keywords": [
+    "voice-notes",
+    "transcription",
+    "speech-to-text",
+    "web-audio",
+    "glassmorphism",
+    "studio"
+  ],
+  "author": "Val",
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}
