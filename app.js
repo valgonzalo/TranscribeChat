@@ -1,5 +1,6 @@
 /**
- * VoiceChat Studio — Real-Time Voice Notes Engine in Spanish with Per-Note Export
+ * VoiceChat Studio — Robust Real-Time Voice Notes Engine
+ * Optimized for Mobile (iOS / Android) and Desktop (Chrome / Safari / Edge)
  */
 
 class VoiceChatStudio {
@@ -8,6 +9,12 @@ class VoiceChatStudio {
     this.isRecording = false;
     this.messages = [];
     
+    // Active Recording Session Accumulator
+    this.currentNoteId = null;
+    this.currentSessionFinalText = '';
+    this.currentSessionInterimText = '';
+    this.restartTimeout = null;
+
     // Audio Context, Synth & Visualizer
     this.audioCtx = null;
     this.analyser = null;
@@ -49,11 +56,21 @@ class VoiceChatStudio {
   }
 
   init() {
+    this.checkSecureContext();
     this.setupCanvasDPI();
     this.loadPersistedMessages();
     this.initSpeechRecognition();
     this.attachEventListeners();
     this.drawIdleVisualizer();
+  }
+
+  checkSecureContext() {
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (!window.isSecureContext && !isLocal) {
+      setTimeout(() => {
+        this.showToast('⚠️ Los navegadores requieren HTTPS (Vercel) para habilitar el micrófono en celulares u otra PC.', 7000);
+      }, 800);
+    }
   }
 
   setupCanvasDPI() {
@@ -71,13 +88,13 @@ class VoiceChatStudio {
   }
 
   // =========================================================================
-  // Speech Recognition Engine (Configured for Spanish - Argentina)
+  // Speech Recognition Engine (Session Accumulator — No Message Fragmentation)
   // =========================================================================
   initSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
     if (!SpeechRecognition) {
-      this.showToast('Navegador no compatible con Speech API. Usá Chrome o Edge.', 5000);
+      this.showToast('Navegador no compatible con Speech API. Usá Chrome, Edge o Safari.', 6000);
       if (this.statusLabel) this.statusLabel.textContent = 'NO COMPATIBLE';
       this.toggleMicBtn.disabled = true;
       return;
@@ -86,7 +103,7 @@ class VoiceChatStudio {
     this.recognition = new SpeechRecognition();
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
-    this.recognition.lang = 'es-AR'; // Hardcoded Spanish (Argentina)
+    this.recognition.lang = 'es-AR'; // Spanish (Argentina)
     this.recognition.maxAlternatives = 1;
 
     this.recognition.onstart = () => {
@@ -97,49 +114,59 @@ class VoiceChatStudio {
     };
 
     this.recognition.onresult = (event) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
+      let interim = '';
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript;
+          // Append finalized words to our session buffer
+          const chunk = transcript.trim();
+          if (chunk) {
+            if (this.currentSessionFinalText) {
+              this.currentSessionFinalText += ' ' + chunk;
+            } else {
+              this.currentSessionFinalText = chunk;
+            }
+          }
         } else {
-          interimTranscript += transcript;
+          interim += transcript;
         }
       }
 
-      // Live streaming real-time bubble
-      if (interimTranscript.trim().length > 0) {
+      this.currentSessionInterimText = interim.trim();
+
+      // Update the active note card in real-time!
+      this.updateActiveSessionCard();
+
+      // Show real-time streaming preview if interim words exist
+      if (this.currentSessionInterimText.length > 0) {
         this.liveBubble.classList.remove('hidden');
-        this.liveText.textContent = interimTranscript;
+        this.liveText.textContent = this.currentSessionInterimText;
         this.scrollToBottom();
       } else {
         this.liveBubble.classList.add('hidden');
-      }
-
-      // Sentence finalized -> Commit note card
-      if (finalTranscript.trim().length > 0) {
-        this.liveBubble.classList.add('hidden');
-        this.addMessage(finalTranscript.trim());
       }
     };
 
     this.recognition.onerror = (event) => {
       console.warn('Speech engine event:', event.error);
-      if (event.error === 'not-allowed') {
-        this.showToast('Permiso de micrófono bloqueado en el navegador.');
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        this.showToast('Permiso de micrófono denegado en el navegador.');
         this.stopRecording();
       }
     };
 
     this.recognition.onend = () => {
+      // If still in recording mode (e.g. mobile paused after silence), restart cleanly
       if (this.isRecording) {
-        try {
-          this.recognition.start();
-        } catch (e) {
-          this.stopRecording();
-        }
+        clearTimeout(this.restartTimeout);
+        this.restartTimeout = setTimeout(() => {
+          if (this.isRecording) {
+            try {
+              this.recognition.start();
+            } catch (e) {}
+          }
+        }, 150);
       } else {
         this.updateUIState(false);
         this.stopAudioVisualizer();
@@ -158,24 +185,85 @@ class VoiceChatStudio {
   }
 
   startRecording() {
+    // Start a fresh session buffer
+    this.currentSessionFinalText = '';
+    this.currentSessionInterimText = '';
+    this.currentNoteId = null;
+
     try {
       this.recognition.lang = 'es-AR';
       this.recognition.start();
     } catch (err) {
-      console.error('Error starting recognition:', err);
+      console.warn('Recognition start caught:', err);
     }
   }
 
   stopRecording() {
     this.isRecording = false;
+    clearTimeout(this.restartTimeout);
     this.liveBubble.classList.add('hidden');
+
     try {
       this.recognition.stop();
     } catch (err) {
-      console.error('Error stopping recognition:', err);
+      console.warn('Recognition stop caught:', err);
     }
+
+    // Finalize the current note session
+    this.finalizeActiveSessionCard();
     this.updateUIState(false);
     this.stopAudioVisualizer();
+  }
+
+  // =========================================================================
+  // Note Accumulator Logic (1 Recording = 1 Single Note)
+  // =========================================================================
+  updateActiveSessionCard() {
+    const fullText = (this.currentSessionFinalText + (this.currentSessionInterimText ? ' ' + this.currentSessionInterimText : '')).trim();
+    if (!fullText) return;
+
+    // Create the note card if this session hasn't created one yet
+    if (!this.currentNoteId) {
+      this.currentNoteId = 'note_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+      const newNote = {
+        id: this.currentNoteId,
+        text: this.smartFormat(fullText),
+        timestamp: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+        date: new Date().toLocaleDateString('es-AR')
+      };
+      this.messages.push(newNote);
+      this.renderMessage(newNote);
+    } else {
+      // Update existing active card in real-time
+      const note = this.messages.find(m => m.id === this.currentNoteId);
+      if (note) {
+        note.text = this.smartFormat(fullText);
+        const cardElem = document.getElementById(this.currentNoteId);
+        if (cardElem) {
+          const bodyElem = cardElem.querySelector('.voice-card-body');
+          if (bodyElem) bodyElem.textContent = note.text;
+        }
+      }
+    }
+    this.scrollToBottom();
+  }
+
+  finalizeActiveSessionCard() {
+    if (this.currentNoteId) {
+      const note = this.messages.find(m => m.id === this.currentNoteId);
+      if (note) {
+        note.text = this.smartFormat(note.text.trim());
+        const cardElem = document.getElementById(this.currentNoteId);
+        if (cardElem) {
+          const bodyElem = cardElem.querySelector('.voice-card-body');
+          if (bodyElem) bodyElem.textContent = note.text;
+        }
+      }
+      this.persistMessages();
+    }
+    this.currentNoteId = null;
+    this.currentSessionFinalText = '';
+    this.currentSessionInterimText = '';
   }
 
   updateUIState(recording) {
@@ -217,22 +305,6 @@ class VoiceChatStudio {
   // =========================================================================
   // Messages & Timeline Management
   // =========================================================================
-  addMessage(text) {
-    const cleanText = this.smartFormat(text);
-    
-    const message = {
-      id: 'note_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-      text: cleanText,
-      timestamp: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
-      date: new Date().toLocaleDateString('es-AR')
-    };
-
-    this.messages.push(message);
-    this.renderMessage(message);
-    this.persistMessages();
-    this.scrollToBottom();
-  }
-
   renderMessage(msg) {
     this.emptyState.classList.add('hidden');
 
@@ -381,12 +453,16 @@ class VoiceChatStudio {
   }
 
   // =========================================================================
-  // High-FPS Fluid Audio Visualizer
+  // High-FPS Fluid Audio Visualizer (Graceful Fallback)
   // =========================================================================
   async startAudioVisualizer() {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume();
+      }
       this.analyser = this.audioCtx.createAnalyser();
       this.micStream = this.audioCtx.createMediaStreamSource(stream);
       
@@ -396,7 +472,7 @@ class VoiceChatStudio {
       
       this.drawActiveVisualizer();
     } catch (e) {
-      console.warn('Visualizer mic stream denied');
+      console.warn('Audio Visualizer mic stream fallback');
     }
   }
 
@@ -406,7 +482,7 @@ class VoiceChatStudio {
       this.visualizerId = null;
     }
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
-      this.audioCtx.close();
+      try { this.audioCtx.close(); } catch (e) {}
     }
     this.drawIdleVisualizer();
   }
@@ -653,7 +729,7 @@ class VoiceChatStudio {
       this.showToast(this.soundFxEnabled ? 'Audio FX activado' : 'Audio FX silenciado');
     });
 
-    // Fluid Canvas Resize across all display resolutions
+    // Fluid Canvas Resize
     const handleResize = () => {
       this.setupCanvasDPI();
       if (!this.isRecording) this.drawIdleVisualizer();
